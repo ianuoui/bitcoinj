@@ -1,5 +1,6 @@
 /*
  * Copyright 2013 Google Inc.
+ * Copyright 2018 Nicola Atzei
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -112,11 +113,7 @@ public class ScriptBuilder {
      * shortest encoding possible.
      */
     public ScriptBuilder number(long num) {
-        if (num >= 0 && num <= 16) {
-            return smallNum((int) num);
-        } else {
-            return bigNum(num);
-        }
+        return number(chunks.size(), num);
     }
 
     /**
@@ -124,7 +121,9 @@ public class ScriptBuilder {
      * uses shortest encoding possible.
      */
     public ScriptBuilder number(int index, long num) {
-        if (num >= 0 && num <= 16) {
+        if (num == -1) {
+            return op(index, OP_1NEGATE);
+        } else if (num >= 0 && num <= 16) {
             return smallNum(index, (int) num);
         } else {
             return bigNum(index, num);
@@ -207,6 +206,40 @@ public class ScriptBuilder {
         // At most the encoded value could take up to 8 bytes, so we don't need
         // to use OP_PUSHDATA opcodes
         return addChunk(index, new ScriptChunk(data.length, data));
+    }
+
+    /**
+     * Adds true to the end of the program.
+     * @return this
+     */
+    public ScriptBuilder opTrue() {
+        return number(1); // it push OP_1/OP_TRUE
+    }
+
+    /**
+     * Adds true to the given index in the program.
+     * @param index at which insert true
+     * @return this
+     */
+    public ScriptBuilder opTrue(int index) {
+        return number(index, 1); // push OP_1/OP_TRUE
+    }
+
+    /**
+     * Adds false to the end of the program.
+     * @return this
+     */
+    public ScriptBuilder opFalse() {
+        return number(0); // push OP_0/OP_FALSE
+    }
+
+    /**
+     * Adds false to the given index in the program.
+     * @param index at which insert true
+     * @return this
+     */
+    public ScriptBuilder opFalse(int index) {
+        return number(index, 0); // push OP_0/OP_FALSE
     }
 
     /** Creates a new immutable Script based on the state of the builder. */

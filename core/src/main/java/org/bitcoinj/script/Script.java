@@ -233,8 +233,7 @@ public class Script {
      * useful more exotic types of transaction, but today most payments are to addresses.
      */
     public boolean isSentToRawPubKey() {
-        return chunks.size() == 2 && chunks.get(1).equalsOpCode(OP_CHECKSIG) &&
-               !chunks.get(0).isOpCode() && chunks.get(0).data.length > 1;
+        return ScriptPattern.isSentToRawPubKey(chunks);
     }
 
     /**
@@ -244,12 +243,7 @@ public class Script {
      * way to make payments due to the short and recognizable base58 form addresses come in.
      */
     public boolean isSentToAddress() {
-        return chunks.size() == 5 &&
-               chunks.get(0).equalsOpCode(OP_DUP) &&
-               chunks.get(1).equalsOpCode(OP_HASH160) &&
-               chunks.get(2).data.length == Address.LENGTH &&
-               chunks.get(3).equalsOpCode(OP_EQUALVERIFY) &&
-               chunks.get(4).equalsOpCode(OP_CHECKSIG);
+        return ScriptPattern.isSentToAddress(chunks);
     }
 
     /**
@@ -687,56 +681,18 @@ public class Script {
      * Bitcoin system).</p>
      */
     public boolean isPayToScriptHash() {
-        // We have to check against the serialized form because BIP16 defines a P2SH output using an exact byte
-        // template, not the logical program structure. Thus you can have two programs that look identical when
-        // printed out but one is a P2SH script and the other isn't! :(
-        byte[] program = getProgram();
-        return program.length == 23 &&
-               (program[0] & 0xff) == OP_HASH160 &&
-               (program[1] & 0xff) == 0x14 &&
-               (program[22] & 0xff) == OP_EQUAL;
+        return ScriptPattern.isPayToScriptHash(chunks);
     }
 
     /**
      * Returns whether this script matches the format used for multisig outputs: [n] [keys...] [m] CHECKMULTISIG
      */
     public boolean isSentToMultiSig() {
-        if (chunks.size() < 4) return false;
-        ScriptChunk chunk = chunks.get(chunks.size() - 1);
-        // Must end in OP_CHECKMULTISIG[VERIFY].
-        if (!chunk.isOpCode()) return false;
-        if (!(chunk.equalsOpCode(OP_CHECKMULTISIG) || chunk.equalsOpCode(OP_CHECKMULTISIGVERIFY))) return false;
-        try {
-            // Second to last chunk must be an OP_N opcode and there should be that many data chunks (keys).
-            ScriptChunk m = chunks.get(chunks.size() - 2);
-            if (!m.isOpCode()) return false;
-            int numKeys = decodeFromOpN(m.opcode);
-            if (numKeys < 1 || chunks.size() != 3 + numKeys) return false;
-            for (int i = 1; i < chunks.size() - 2; i++) {
-                if (chunks.get(i).isOpCode()) return false;
-            }
-            // First chunk must be an OP_N opcode too.
-            if (decodeFromOpN(chunks.get(0).opcode) < 1) return false;
-        } catch (IllegalArgumentException e) { // thrown by decodeFromOpN()
-            return false;   // Not an OP_N opcode.
-        }
-        return true;
+        return ScriptPattern.isSentToMultisig(chunks);
     }
 
     public boolean isSentToCLTVPaymentChannel() {
-        if (chunks.size() != 10) return false;
-        // Check that opcodes match the pre-determined format.
-        if (!chunks.get(0).equalsOpCode(OP_IF)) return false;
-        // chunk[1] = recipient pubkey
-        if (!chunks.get(2).equalsOpCode(OP_CHECKSIGVERIFY)) return false;
-        if (!chunks.get(3).equalsOpCode(OP_ELSE)) return false;
-        // chunk[4] = locktime
-        if (!chunks.get(5).equalsOpCode(OP_CHECKLOCKTIMEVERIFY)) return false;
-        if (!chunks.get(6).equalsOpCode(OP_DROP)) return false;
-        if (!chunks.get(7).equalsOpCode(OP_ENDIF)) return false;
-        // chunk[8] = sender pubkey
-        if (!chunks.get(9).equalsOpCode(OP_CHECKSIG)) return false;
-        return true;
+        return ScriptPattern.isSentToCltvPaymentChannel(chunks);
     }
 
     private static boolean equalsRange(byte[] a, int start, byte[] b) {
@@ -853,7 +809,7 @@ public class Script {
     }
 
     public boolean isOpReturn() {
-        return chunks.size() > 0 && chunks.get(0).equalsOpCode(OP_RETURN);
+        return ScriptPattern.isOpReturn(chunks);
     }
 
     /**
@@ -1457,11 +1413,10 @@ public class Script {
             return;
 
         // Compare the specified sequence number with the input.
-        if (!checkSequence(nSequence, txContainingThis, index))
-            throw new ScriptException(ScriptError.SCRIPT_ERR_UNSATISFIED_LOCKTIME, "Unsatisfied CHECKLOCKTIMEVERIFY lock time");
+        checkSequence(nSequence, txContainingThis, index);
     }
 
-    private static boolean checkSequence(long nSequence, Transaction txContainingThis, int index) {
+    private static void checkSequence(long nSequence, Transaction txContainingThis, int index) {
         // Relative lock times are supported by comparing the passed
         // in operand to the sequence number of the input.
         long txToSequence = txContainingThis.getInput(index).getSequenceNumber();
@@ -1469,14 +1424,14 @@ public class Script {
         // Fail if the transaction's version number is not set high
         // enough to trigger BIP 68 rules.
         if (txContainingThis.getVersion() < 2)
-            return false;
+            throw new ScriptException(ScriptError.SCRIPT_ERR_UNSATISFIED_LOCKTIME, "Transaction version is < 2");
 
         // Sequence numbers with their most significant bit set are not
         // consensus constrained. Testing that the transaction's sequence
         // number do not have this bit set prevents using this property
         // to get around a CHECKSEQUENCEVERIFY check.
         if ((txToSequence & TransactionInput.SEQUENCE_LOCKTIME_DISABLE_FLAG) != 0)
-            return false;
+            throw new ScriptException(ScriptError.SCRIPT_ERR_UNSATISFIED_LOCKTIME, "Sequence disable flag is set");
 
         // Mask off any bits that do not have consensus-enforced meaning
         // before doing the integer comparisons
@@ -1493,15 +1448,13 @@ public class Script {
         // the nSequenceMasked in the transaction.
         if (!((txToSequenceMasked < TransactionInput.SEQUENCE_LOCKTIME_TYPE_FLAG && nSequenceMasked < TransactionInput.SEQUENCE_LOCKTIME_TYPE_FLAG) ||
               (txToSequenceMasked >= TransactionInput.SEQUENCE_LOCKTIME_TYPE_FLAG && nSequenceMasked >= TransactionInput.SEQUENCE_LOCKTIME_TYPE_FLAG))) {
-            return false;
+            throw new ScriptException(ScriptError.SCRIPT_ERR_UNSATISFIED_LOCKTIME, "Relative locktime requirement type mismatch");
         }
 
         // Now that we know we're comparing apples-to-apples, the
         // comparison is a simple numeric one.
         if (nSequenceMasked > txToSequenceMasked)
-            return false;
-
-        return true;
+            throw new ScriptException(ScriptError.SCRIPT_ERR_UNSATISFIED_LOCKTIME, "Relative locktime requirement not satisfied");
     }
 
     private static void executeCheckSig(Transaction txContainingThis, int index, Script script, LinkedList<byte[]> stack,
